@@ -72,11 +72,11 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 				code: z.string().describe("Python code to execute"),
 				language: z.enum(["python", "r"]).default("python").describe("Programming language"),
 				kernel_type: z.enum(["notebook", "script"]).default("script").describe("Kernel type"),
-				enable_gpu: z.boolean().default(false).describe("Enable GPU acceleration"),
+				accelerator: z.enum(["none", "NvidiaTeslaP100", "NvidiaTeslaT4", "NvidiaTeslaT4x2", "TpuV6E8"]).default("none").describe("GPU/TPU accelerator (none, NvidiaTeslaP100, NvidiaTeslaT4, NvidiaTeslaT4x2, TpuV6E8)"),
 				enable_internet: z.boolean().default(true).describe("Enable internet access"),
 				dataset_sources: z.array(z.string()).optional().describe("Dataset references to attach (e.g., 'username/dataset-name')"),
 			},
-			async ({ title, code, language, kernel_type, enable_gpu, enable_internet, dataset_sources }) => {
+			async ({ title, code, language, kernel_type, accelerator, enable_internet, dataset_sources }) => {
 				try {
 					const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 					const result = await kaggleApi(this.env, "/kernels/push", "POST", {
@@ -86,7 +86,8 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 						language,
 						kernelType: kernel_type,
 						isPrivate: true,
-						enableGpu: enable_gpu,
+						enableGpu: accelerator !== "none",
+						...(accelerator !== "none" ? { accelerator } : {}),
 						enableInternet: enable_internet,
 						datasetDataSources: dataset_sources || [],
 						competitionDataSources: [],
@@ -232,11 +233,11 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 			{
 				title: z.string().describe("Kernel title (used as slug)"),
 				code: z.string().describe("Python code to execute"),
-				enable_gpu: z.boolean().default(false).describe("Enable GPU (P100/T4)"),
+				accelerator: z.enum(["none", "NvidiaTeslaP100", "NvidiaTeslaT4", "NvidiaTeslaT4x2", "TpuV6E8"]).default("none").describe("GPU/TPU accelerator"),
 				dataset_sources: z.array(z.string()).optional().describe("Dataset references to attach"),
 				timeout_seconds: z.number().default(600).describe("Max wait time in seconds (default: 10 min)"),
 			},
-			async ({ title, code, enable_gpu, dataset_sources, timeout_seconds }) => {
+			async ({ title, code, accelerator, dataset_sources, timeout_seconds }) => {
 				try {
 					const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 					const ref = `${this.env.KAGGLE_USERNAME}/${slug}`;
@@ -249,7 +250,8 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 						language: "python",
 						kernelType: "script",
 						isPrivate: true,
-						enableGpu: enable_gpu,
+						enableGpu: accelerator !== "none",
+						...(accelerator !== "none" ? { accelerator } : {}),
 						enableInternet: true,
 						datasetDataSources: dataset_sources || [],
 						competitionDataSources: [],

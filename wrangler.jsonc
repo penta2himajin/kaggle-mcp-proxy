@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kaggle-mcp-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+  /**
+   * Secrets (set via `wrangler secret put`):
+   *   GITHUB_CLIENT_ID
+   *   GITHUB_CLIENT_SECRET
+   *   COOKIE_ENCRYPTION_KEY
+   *   ALLOWED_USERS          — comma-separated GitHub usernames (optional)
+   *   KAGGLE_USERNAME        — Kaggle account username
+   *   KAGGLE_KEY             — Kaggle API key
+   */
+  "migrations": [
+    {
+      "new_sqlite_classes": ["KaggleMCP"],
+      "tag": "v1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "KaggleMCP",
+        "name": "MCP_OBJECT"
+      }
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "38861e8bc4474e5894c8dff94c3b1815"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "dev": {
+    "port": 8788
+  }
+}

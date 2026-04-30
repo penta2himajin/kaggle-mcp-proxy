@@ -9,7 +9,7 @@ A remote MCP server on Cloudflare Workers that proxies tool calls to the Kaggle 
 | `kaggle_kernel_push` | Create/update a kernel and start execution |
 | `kaggle_kernel_status` | Check execution status (queued/running/complete/error) |
 | `kaggle_kernel_output` | Get execution results |
-| `kaggle_kernel_logs` | Tail kernel execution log (works while still running; supports `since_line` for incremental polling) |
+| `kaggle_kernel_logs` | Tail kernel execution log. The public API only populates the log after `complete`/`error` (same limitation as the official `kaggle` CLI). Pass `live: true` to attempt Kaggle's undocumented internal RPC for live tailing — experimental, falls back to the public API and emits a `warning` if the internal call fails. |
 | `kaggle_kernels_list` | Search kernels |
 | `kaggle_run` | Push code, wait for completion, return output (all-in-one) |
 | `kaggle_datasets_list` | Search datasets |

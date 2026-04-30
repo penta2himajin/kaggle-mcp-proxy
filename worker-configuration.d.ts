@@ -8,6 +8,8 @@ declare namespace Cloudflare {
 		ALLOWED_USERS: string;
 		KAGGLE_USERNAME: string;
 		KAGGLE_KEY: string;
+		KAGGLE_SESSION_ID?: string;
+		KAGGLE_XSRF_TOKEN?: string;
 		MCP_OBJECT: DurableObjectNamespace<import("./src/index").KaggleMCP>;
 	}
 }

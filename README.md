@@ -12,7 +12,31 @@ A remote MCP server on Cloudflare Workers that proxies tool calls to the Kaggle 
 | `kaggle_kernels_list` | Search kernels |
 | `kaggle_run` | Push code, wait for completion, return output (all-in-one) |
 | `kaggle_datasets_list` | Search datasets |
+| `kaggle_dataset_create` | Create a new dataset and upload files inline (text or base64) |
+| `kaggle_dataset_version` | Upload a new version of an existing dataset |
+| `kaggle_dataset_status` | Check processing status of a dataset |
 | `kaggle_competitions_list` | Search competitions |
+
+### Uploading training data
+
+`kaggle_dataset_create` and `kaggle_dataset_version` accept files inline:
+
+```jsonc
+{
+  "slug": "my-training-data",
+  "title": "My Training Data",
+  "files": [
+    { "name": "train.csv", "content": "id,label\n1,0\n2,1\n", "content_type": "text/csv" },
+    { "name": "weights.bin", "content": "<base64...>", "encoding": "base64" }
+  ]
+}
+```
+
+Each file is uploaded via Kaggle's blob protocol (`POST /blobs/upload` →
+`PUT createUrl`), then attached when the dataset (or new version) is finalized.
+Because content is sent inline through the MCP request, total payload size is
+bounded by Cloudflare Workers' request limits (100 MB on paid plans). For
+larger uploads, use the official `kaggle` CLI directly.
 
 ### GPU/TPU Accelerators
 

@@ -14,6 +14,7 @@ type Props = {
 // ── Kaggle API helpers ─────────────────────────────────────────────
 
 const KAGGLE_API = "https://www.kaggle.com/api/v1";
+const KAGGLE_INTERNAL_API = "https://www.kaggle.com/api/i";
 
 function kaggleAuthHeader(env: Env): string {
 	const isBearer = env.KAGGLE_KEY.startsWith("KGAT_");
@@ -47,6 +48,134 @@ async function kaggleApi(
 		return JSON.parse(text);
 	} catch {
 		return { raw: text };
+	}
+}
+
+// Best-effort call to Kaggle's internal RPC service used by the web app
+// (e.g. /api/i/kernels.KernelsService/GetKernel). These endpoints are
+// undocumented and the bundle's JS callers authenticate via session cookies
+// + XSRF, so an API-key Authorization header may not work. Returns null on
+// any failure (network, non-2xx, parse error) so callers can gracefully
+// fall back to public-API behavior.
+async function kaggleInternalRpc(
+	env: Env,
+	rpcPath: string,
+	body: unknown,
+): Promise<unknown | null> {
+	try {
+		const res = await fetch(`${KAGGLE_INTERNAL_API}/${rpcPath}`, {
+			method: "POST",
+			headers: {
+				Authorization: kaggleAuthHeader(env),
+				"Content-Type": "application/json",
+				Accept: "application/json",
+				"User-Agent": "kaggle-mcp-proxy/1.0",
+			},
+			body: JSON.stringify(body),
+		});
+		if (!res.ok) return null;
+		const text = await res.text();
+		try {
+			return JSON.parse(text);
+		} catch {
+			return { raw: text };
+		}
+	} catch {
+		return null;
+	}
+}
+
+// Decode a Connect-protocol streaming body into an array of JSON messages.
+// Wire format per envelope: 1 flag byte + 4-byte BE length + N message bytes.
+// The final envelope has flag bit 0x02 set and contains end-of-stream
+// metadata (which we ignore). Returns null if the buffer doesn't parse as
+// envelopes — the caller can then try plain JSON.
+function parseConnectStream(buf: Uint8Array): unknown[] | null {
+	const messages: unknown[] = [];
+	let off = 0;
+	const dec = new TextDecoder();
+	while (off + 5 <= buf.byteLength) {
+		const flags = buf[off];
+		const len =
+			(buf[off + 1] << 24) |
+			(buf[off + 2] << 16) |
+			(buf[off + 3] << 8) |
+			buf[off + 4];
+		off += 5;
+		if (off + len > buf.byteLength) return null;
+		const body = buf.subarray(off, off + len);
+		off += len;
+		if (flags & 0x02) break;
+		try {
+			messages.push(JSON.parse(dec.decode(body)));
+		} catch {
+			return null;
+		}
+	}
+	if (off !== buf.byteLength && (off === 0 || messages.length === 0)) return null;
+	return messages;
+}
+
+// Resolve owner/slug → kernelRun.id (acts as kernelSessionId for log RPCs).
+async function resolveKernelSessionId(
+	env: Env,
+	owner: string,
+	slug: string,
+): Promise<number | null> {
+	const data = await kaggleInternalRpc(env, "kernels.KernelsService/GetKernel", {
+		username: owner,
+		slug,
+	}) as { kernelRun?: { id?: number } } | null;
+	const id = data?.kernelRun?.id;
+	return typeof id === "number" && id > 0 ? id : null;
+}
+
+// Fetch live log records via the internal streaming RPC. Returns the same
+// `[{stream_name, time, data}, ...]` shape that the public API uses for
+// completed kernels, re-serialized as a JSON string so callers can apply
+// the existing parsing path uniformly. Returns null on any failure.
+async function fetchLiveKernelLog(
+	env: Env,
+	sessionId: number,
+): Promise<string | null> {
+	try {
+		const res = await fetch(
+			`${KAGGLE_INTERNAL_API}/kernels.KernelsService/GetKernelSessionLog`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: kaggleAuthHeader(env),
+					"Content-Type": "application/json",
+					Accept: "application/json",
+					"User-Agent": "kaggle-mcp-proxy/1.0",
+				},
+				body: JSON.stringify({ kernelSessionId: sessionId }),
+			},
+		);
+		if (!res.ok) return null;
+
+		const buf = new Uint8Array(await res.arrayBuffer());
+		if (buf.byteLength === 0) return "";
+
+		// First try plain JSON (unary response shape).
+		try {
+			const text = new TextDecoder().decode(buf);
+			const json = JSON.parse(text) as { log?: string; messages?: unknown[] };
+			if (typeof json.log === "string") return json.log;
+			if (Array.isArray(json.messages)) return JSON.stringify(json.messages);
+			if (Array.isArray(json)) return JSON.stringify(json);
+		} catch {
+			// Not plain JSON — try Connect envelope framing.
+		}
+
+		const messages = parseConnectStream(buf);
+		if (messages === null) return null;
+		// Each streamed message is typically a batch of stream records or a
+		// single record. Flatten arrays into one combined record list.
+		const flat = messages.flatMap((m) => (Array.isArray(m) ? m : [m]));
+		return JSON.stringify(flat);
+	} catch {
+		return null;
 	}
 }
 
@@ -193,24 +322,46 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 
 		this.server.tool(
 			"kaggle_kernel_logs",
-			"Fetch the execution log of a Kaggle kernel. Works while the kernel is still running, so you can poll this to follow progress. Pass `since_line` to receive only newly appended lines on subsequent calls.",
+			"Fetch the execution log of a Kaggle kernel. By default uses the public API, which only populates the log after the kernel reaches `complete` or `error` (the official `kaggle` CLI has the same limitation). Pass `live: true` to attempt Kaggle's undocumented internal RPC for live tailing of running kernels; this is experimental and may fail (auth/format), in which case the call falls back to the public API and returns a `warning` field.",
 			{
 				kernel: z.string().describe("Kernel reference (e.g., 'username/kernel-name')"),
 				since_line: z.number().int().nonnegative().default(0).describe("Skip the first N lines of the log. Use the `total_lines` from the previous call to stream only new output."),
 				tail: z.number().int().positive().optional().describe("If set, return only the last N lines (after `since_line` is applied)."),
+				live: z.boolean().default(false).describe("Experimental: try Kaggle's internal streaming RPC for live logs while the kernel is running. Falls back to the public API on failure."),
 			},
-			async ({ kernel, since_line, tail }) => {
+			async ({ kernel, since_line, tail, live }) => {
 				try {
 					const [owner, name] = kernel.split("/");
-					const result = await kaggleApi(
-						this.env,
-						`/kernels/output?userName=${owner}&kernelSlug=${name}`,
-					) as { log?: string };
+					let rawLog = "";
+					let warning: string | undefined;
+					let source = "public";
 
-					// Kaggle returns `log` as a JSON-encoded array of stream records:
+					if (live) {
+						const sessionId = await resolveKernelSessionId(this.env, owner, name);
+						if (sessionId === null) {
+							warning = "live=true: failed to resolve kernel session via internal RPC (auth or RPC unavailable); falling back to public API";
+						} else {
+							const liveLog = await fetchLiveKernelLog(this.env, sessionId);
+							if (liveLog === null) {
+								warning = `live=true: internal log RPC failed for session ${sessionId} (auth, format, or network); falling back to public API`;
+							} else {
+								rawLog = liveLog;
+								source = "internal";
+							}
+						}
+					}
+
+					if (source === "public") {
+						const result = await kaggleApi(
+							this.env,
+							`/kernels/output?userName=${owner}&kernelSlug=${name}`,
+						) as { log?: string };
+						rawLog = result.log ?? "";
+					}
+
+					// Both code paths return a JSON-encoded array of stream records:
 					//   [{"stream_name":"stdout","time":0.9,"data":"..."}, ...]
 					// Decode and concatenate the `data` fields to reconstruct plain text.
-					const rawLog = result.log ?? "";
 					let logText = "";
 					if (rawLog) {
 						try {
@@ -233,9 +384,11 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 						content: [{
 							type: "text",
 							text: JSON.stringify({
+								source,
 								total_lines: allLines.length,
 								returned_lines: lines.length,
 								log: lines.join("\n"),
+								...(warning ? { warning } : {}),
 							}, null, 2),
 						}],
 					};

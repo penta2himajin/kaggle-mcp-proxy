@@ -206,8 +206,25 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 						this.env,
 						`/kernels/output?userName=${owner}&kernelSlug=${name}`,
 					) as { log?: string };
-					const fullLog = result.log ?? "";
-					const allLines = fullLog === "" ? [] : fullLog.split("\n");
+
+					// Kaggle returns `log` as a JSON-encoded array of stream records:
+					//   [{"stream_name":"stdout","time":0.9,"data":"..."}, ...]
+					// Decode and concatenate the `data` fields to reconstruct plain text.
+					const rawLog = result.log ?? "";
+					let logText = "";
+					if (rawLog) {
+						try {
+							const records = JSON.parse(rawLog) as Array<{ data?: string }>;
+							logText = records.map((r) => r.data ?? "").join("");
+						} catch {
+							logText = rawLog;
+						}
+					}
+
+					const allLines = logText.split("\n");
+					if (allLines.length > 0 && allLines[allLines.length - 1] === "") {
+						allLines.pop();
+					}
 					let lines = allLines.slice(since_line);
 					if (tail !== undefined && lines.length > tail) {
 						lines = lines.slice(-tail);

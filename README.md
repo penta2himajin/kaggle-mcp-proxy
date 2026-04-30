@@ -8,8 +8,7 @@ A remote MCP server on Cloudflare Workers that proxies tool calls to the Kaggle 
 |------|-------------|
 | `kaggle_kernel_push` | Create/update a kernel and start execution |
 | `kaggle_kernel_status` | Check execution status (queued/running/complete/error) |
-| `kaggle_kernel_output` | Get execution results |
-| `kaggle_kernel_logs` | Tail kernel execution log. The public API only populates the log after `complete`/`error` (same limitation as the official `kaggle` CLI). Pass `live: true` to attempt Kaggle's undocumented internal RPC for live tailing — experimental, falls back to the public API and emits a `warning` if the internal call fails. |
+| `kaggle_kernel_output` | Get execution output (files + log). The `log` field is only populated after the kernel reaches `complete`/`error`; while `queued`/`running` it is empty. Kaggle's public REST API does not expose live execution logs (the official `kaggle` CLI has the same limitation). Poll `kaggle_kernel_status` until completion. |
 | `kaggle_kernels_list` | Search kernels |
 | `kaggle_run` | Push code, wait for completion, return output (all-in-one) |
 | `kaggle_datasets_list` | Search datasets |
@@ -117,38 +116,6 @@ npm run deploy
 | `ALLOWED_USERS` | No | Comma-separated GitHub usernames |
 | `KAGGLE_USERNAME` | Yes | Kaggle account username |
 | `KAGGLE_KEY` | Yes | Kaggle API token |
-| `KAGGLE_SESSION_ID` | No | `ka_sessionid` cookie value (only for `kaggle_kernel_logs` with `live: true`; see below) |
-| `KAGGLE_XSRF_TOKEN` | No | `XSRF-TOKEN` cookie value (paired with `KAGGLE_SESSION_ID`) |
-
-## Live kernel logs (`live: true`)
-
-The Kaggle public REST API (`/api/v1/kernels/output`) only populates the
-log after a kernel reaches `complete` or `error` — the official `kaggle`
-CLI's `--follow` flag has the exact same limitation. To stream logs while
-a kernel is still running, the Kaggle web UI uses an internal RPC
-(`/api/i/kernels.KernelsService/GetKernelSessionLog`) that **rejects
-API-key authentication and only accepts session cookies**. After
-investigating kagglehub, kagglesdk, and every community project that
-calls `/api/i/`, we confirmed there is no API-key → session-cookie
-exchange — it requires an interactive browser login.
-
-If you want `live: true` to work, paste your own browser session into
-Worker secrets:
-
-1. Log in to https://www.kaggle.com in any browser.
-2. Open DevTools → Application → Cookies → `https://www.kaggle.com`.
-3. Copy the values of `ka_sessionid` and `XSRF-TOKEN`.
-4. Store them as Worker secrets:
-
-   ```bash
-   npx wrangler secret put KAGGLE_SESSION_ID    # paste ka_sessionid value
-   npx wrangler secret put KAGGLE_XSRF_TOKEN     # paste XSRF-TOKEN value
-   ```
-
-Cookies typically last ~30 days. When `live: true` returns a `warning`
-mentioning status 401/403, your cookies have expired — re-extract and
-re-set the secrets. Without these secrets set, `live: true` falls back to
-the public API and returns a warning.
 
 ## Platform compatibility
 

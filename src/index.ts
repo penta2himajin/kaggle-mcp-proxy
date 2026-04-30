@@ -192,6 +192,43 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 		);
 
 		this.server.tool(
+			"kaggle_kernel_logs",
+			"Fetch the execution log of a Kaggle kernel. Works while the kernel is still running, so you can poll this to follow progress. Pass `since_line` to receive only newly appended lines on subsequent calls.",
+			{
+				kernel: z.string().describe("Kernel reference (e.g., 'username/kernel-name')"),
+				since_line: z.number().int().nonnegative().default(0).describe("Skip the first N lines of the log. Use the `total_lines` from the previous call to stream only new output."),
+				tail: z.number().int().positive().optional().describe("If set, return only the last N lines (after `since_line` is applied)."),
+			},
+			async ({ kernel, since_line, tail }) => {
+				try {
+					const [owner, name] = kernel.split("/");
+					const result = await kaggleApi(
+						this.env,
+						`/kernels/output?userName=${owner}&kernelSlug=${name}`,
+					) as { log?: string };
+					const fullLog = result.log ?? "";
+					const allLines = fullLog === "" ? [] : fullLog.split("\n");
+					let lines = allLines.slice(since_line);
+					if (tail !== undefined && lines.length > tail) {
+						lines = lines.slice(-tail);
+					}
+					return {
+						content: [{
+							type: "text",
+							text: JSON.stringify({
+								total_lines: allLines.length,
+								returned_lines: lines.length,
+								log: lines.join("\n"),
+							}, null, 2),
+						}],
+					};
+				} catch (e: unknown) {
+					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
+				}
+			},
+		);
+
+		this.server.tool(
 			"kaggle_kernels_list",
 			"Search and list Kaggle kernels/notebooks.",
 			{

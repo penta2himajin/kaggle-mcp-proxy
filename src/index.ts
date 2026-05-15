@@ -50,6 +50,23 @@ async function kaggleApi(
 	}
 }
 
+// Kaggle list endpoints return each value three times: `xxxNullable`, `xxx`,
+// and a `hasXxx` boolean marker. Drop the redundant pair to shrink responses
+// (a single dataset page can otherwise blow past Claude's tool result limit).
+function trimKaggleResponse<T>(obj: T): T {
+	if (Array.isArray(obj)) return obj.map(trimKaggleResponse) as unknown as T;
+	if (obj && typeof obj === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+			if (key.endsWith("Nullable")) continue;
+			if (/^has[A-Z]/.test(key) && typeof value === "boolean") continue;
+			out[key] = trimKaggleResponse(value);
+		}
+		return out as T;
+	}
+	return obj;
+}
+
 // Decode either a base64 string or a plain UTF-8 string into bytes.
 function decodeFileContent(content: string, encoding: "utf8" | "base64"): Uint8Array {
 	if (encoding === "base64") {
@@ -211,7 +228,9 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 					if (sort_by) params.set("sortBy", sort_by);
 					if (page) params.set("page", String(page));
 					if (page_size) params.set("pageSize", String(page_size));
-					const result = await kaggleApi(this.env, `/kernels/list?${params}`);
+					const raw = await kaggleApi(this.env, `/kernels/list?${params}`);
+					let result = trimKaggleResponse(raw);
+					if (page_size && Array.isArray(result)) result = result.slice(0, page_size);
 					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 				} catch (e: unknown) {
 					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
@@ -351,21 +370,25 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 
 		this.server.tool(
 			"kaggle_datasets_list",
-			"Search and list Kaggle datasets.",
+			"Search and list Kaggle datasets. Defaults to listing your own datasets (KAGGLE_USERNAME); pass user='' to list trending/public datasets across all users.",
 			{
 				search: z.string().optional().describe("Search query"),
+				user: z.string().optional().describe("Filter by username. Defaults to your own datasets when omitted; pass an empty string to disable the filter."),
 				sort_by: z.enum(["hotness", "votes", "updated", "active", "published"]).optional(),
 				page: z.number().optional(),
-				page_size: z.number().optional(),
+				page_size: z.number().optional().describe("Trim to the first N results (applied client-side; Kaggle's endpoint ignores pageSize and always returns 20 per page)."),
 			},
-			async ({ search, sort_by, page, page_size }) => {
+			async ({ search, user, sort_by, page, page_size }) => {
 				try {
 					const params = new URLSearchParams();
 					if (search) params.set("search", search);
+					const effectiveUser = user === undefined ? this.env.KAGGLE_USERNAME : user;
+					if (effectiveUser) params.set("user", effectiveUser);
 					if (sort_by) params.set("sortBy", sort_by);
 					if (page) params.set("page", String(page));
-					if (page_size) params.set("pageSize", String(page_size));
-					const result = await kaggleApi(this.env, `/datasets/list?${params}`);
+					const raw = await kaggleApi(this.env, `/datasets/list?${params}`);
+					let result = trimKaggleResponse(raw);
+					if (page_size && Array.isArray(result)) result = result.slice(0, page_size);
 					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 				} catch (e: unknown) {
 					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
@@ -391,7 +414,8 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 					if (category) params.set("category", category);
 					if (sort_by) params.set("sortBy", sort_by);
 					if (page) params.set("page", String(page));
-					const result = await kaggleApi(this.env, `/competitions/list?${params}`);
+					const raw = await kaggleApi(this.env, `/competitions/list?${params}`);
+					const result = trimKaggleResponse(raw);
 					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 				} catch (e: unknown) {
 					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };

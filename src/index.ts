@@ -370,10 +370,10 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 
 		this.server.tool(
 			"kaggle_datasets_list",
-			"Search and list Kaggle datasets. Defaults to listing your own datasets (KAGGLE_USERNAME); pass user='' to list trending/public datasets across all users.",
+			"Search and list Kaggle datasets. Defaults to your own datasets (including private). Pass user='<name>' to view another user's public datasets, or user='' to list trending/public datasets across all users.",
 			{
 				search: z.string().optional().describe("Search query"),
-				user: z.string().optional().describe("Filter by username. Defaults to your own datasets when omitted; pass an empty string to disable the filter."),
+				user: z.string().optional().describe("Filter by username. When omitted, lists your own datasets including private ones (uses Kaggle's group=my). Pass a username to see that user's public datasets, or '' to disable the filter."),
 				sort_by: z.enum(["hotness", "votes", "updated", "active", "published"]).optional(),
 				page: z.number().optional(),
 				page_size: z.number().optional().describe("Trim to the first N results (applied client-side; Kaggle's endpoint ignores pageSize and always returns 20 per page)."),
@@ -382,8 +382,13 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 				try {
 					const params = new URLSearchParams();
 					if (search) params.set("search", search);
-					const effectiveUser = user === undefined ? this.env.KAGGLE_USERNAME : user;
-					if (effectiveUser) params.set("user", effectiveUser);
+					if (user === undefined) {
+						// Kaggle's group=my returns the authenticated user's datasets,
+						// including private. Plain user=<self> would only show public.
+						params.set("group", "my");
+					} else if (user) {
+						params.set("user", user);
+					}
 					if (sort_by) params.set("sortBy", sort_by);
 					if (page) params.set("page", String(page));
 					const raw = await kaggleApi(this.env, `/datasets/list?${params}`);

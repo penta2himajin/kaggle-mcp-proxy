@@ -40,15 +40,30 @@ larger uploads, use the official `kaggle` CLI directly.
 
 ### GPU/TPU Accelerators
 
-Specify the `accelerator` parameter when pushing kernels:
+Specify the `accelerator` parameter when pushing kernels. The values map
+directly to Kaggle's `machineShape` API field. The list below mirrors
+[Kaggle's official docs](https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels.md)
+(as of Feb 2026):
 
-| Value | Hardware |
-|-------|----------|
-| `none` | CPU only |
-| `NvidiaTeslaP100` | NVIDIA Tesla P100 (16GB) |
-| `NvidiaTeslaT4` | NVIDIA Tesla T4 (16GB) |
-| `NvidiaTeslaT4x2` | NVIDIA Tesla T4 x2 |
-| `TpuV6E8` | TPU v6e-8 |
+| Value | Hardware | Availability |
+|-------|----------|--------------|
+| `none` | CPU only | All |
+| `NvidiaTeslaP100` | NVIDIA Tesla P100 | Free tier |
+| `NvidiaTeslaT4` | NVIDIA Tesla T4 | Free tier |
+| `NvidiaTeslaT4Highmem` | NVIDIA Tesla T4 (high-memory variant) | Free tier |
+| `Tpu1VmV38` | TPU VM v3-8 | Free tier |
+| `TpuV6E8` | TPU v6e-8 | Free tier |
+| `TpuV38` | TPU v3-8 | Restricted |
+| `TpuV5E8` | TPU v5e-8 | Restricted |
+| `NvidiaTeslaA100` | NVIDIA A100 | Competition/admin |
+| `NvidiaL4` | NVIDIA L4 | Restricted |
+| `NvidiaL4X1` | NVIDIA L4 x1 | Restricted |
+| `NvidiaH100` | NVIDIA H100 | Admin |
+| `NvidiaRtxPro6000` | NVIDIA RTX Pro 6000 | Admin |
+
+> **Note:** Kaggle removed `NvidiaTeslaT4x2` from the public API. Use
+> `NvidiaTeslaT4Highmem` for higher-resource T4 workloads. Restricted shapes
+> will return an error if your account does not have access.
 
 Kaggle provides **30 hours/week** of free GPU time.
 

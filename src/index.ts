@@ -111,6 +111,51 @@ async function uploadDatasetFile(
 	return start.token;
 }
 
+// Fetch Kaggle's canonical accelerator list from the kaggle-cli docs. The
+// shape names map 1:1 to the `machineShape` field of `/kernels/push`, so we
+// avoid baking a stale enum into the worker and let upstream be the source
+// of truth.
+const KAGGLE_KERNELS_DOC = "https://raw.githubusercontent.com/Kaggle/kaggle-cli/main/docs/kernels.md";
+
+async function fetchKaggleAccelerators(): Promise<{
+	asOf: string;
+	source: string;
+	accelerators: string[];
+	notes: string[];
+}> {
+	const res = await fetch(KAGGLE_KERNELS_DOC);
+	if (!res.ok) throw new Error(`Failed to fetch kernels.md: ${res.status}`);
+	const md = await res.text();
+	const heading = md.match(/Accelerators available as of ([^:\n]+):\s*\n/);
+	if (!heading) {
+		throw new Error("Could not locate 'Accelerators available as of …' heading in kernels.md; upstream doc format may have changed.");
+	}
+	const tail = md.slice(md.indexOf(heading[0]) + heading[0].length);
+	const accelerators: string[] = [];
+	const notes: string[] = [];
+	let listEnded = false;
+	for (const line of tail.split("\n")) {
+		const bullet = line.match(/^\*\s+(\S+)\s*$/);
+		if (!listEnded && bullet) {
+			accelerators.push(bullet[1]);
+			continue;
+		}
+		if (!accelerators.length) continue;
+		if (!line.trim()) {
+			listEnded = true;
+			continue;
+		}
+		if (line.startsWith("#")) break;
+		notes.push(line.trim());
+	}
+	return {
+		asOf: heading[1].trim(),
+		source: "https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels.md",
+		accelerators,
+		notes,
+	};
+}
+
 // ── MCP Server ──────────────────────────────────────────────────────
 
 export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
@@ -135,7 +180,7 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 				code: z.string().describe("Python code to execute"),
 				language: z.enum(["python", "r"]).default("python").describe("Programming language"),
 				kernel_type: z.enum(["notebook", "script"]).default("script").describe("Kernel type"),
-				accelerator: z.enum(["none", "NvidiaTeslaP100", "NvidiaTeslaT4", "NvidiaTeslaT4x2", "TpuV6E8"]).default("none").describe("GPU/TPU accelerator (none, NvidiaTeslaP100, NvidiaTeslaT4, NvidiaTeslaT4x2, TpuV6E8)"),
+				accelerator: z.string().default("none").describe("Kaggle machineShape value, or 'none' for CPU-only. Examples: NvidiaTeslaT4, NvidiaTeslaT4Highmem, NvidiaTeslaP100, TpuV6E8. Call kaggle_accelerators_list to fetch the current upstream list."),
 				enable_internet: z.boolean().default(true).describe("Enable internet access"),
 				dataset_sources: z.array(z.string()).optional().describe("Dataset references to attach (e.g., 'username/dataset-name')"),
 			},
@@ -231,6 +276,20 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 					const raw = await kaggleApi(this.env, `/kernels/list?${params}`);
 					let result = trimKaggleResponse(raw);
 					if (page_size && Array.isArray(result)) result = result.slice(0, page_size);
+					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+				} catch (e: unknown) {
+					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
+				}
+			},
+		);
+
+		this.server.tool(
+			"kaggle_accelerators_list",
+			"Fetch the current set of accelerator (machineShape) values Kaggle accepts, sourced live from the official kaggle-cli docs (docs/kernels.md). Use the returned shape names as the `accelerator` parameter to kaggle_kernel_push / kaggle_run. Some shapes (A100, H100, RtxPro6000, etc.) are restricted to specific competitions or admins — Kaggle will reject the push if your account is not eligible.",
+			{},
+			async () => {
+				try {
+					const result = await fetchKaggleAccelerators();
 					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 				} catch (e: unknown) {
 					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
@@ -436,7 +495,7 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 			{
 				title: z.string().describe("Kernel title (used as slug)"),
 				code: z.string().describe("Python code to execute"),
-				accelerator: z.enum(["none", "NvidiaTeslaP100", "NvidiaTeslaT4", "NvidiaTeslaT4x2", "TpuV6E8"]).default("none").describe("GPU/TPU accelerator"),
+				accelerator: z.string().default("none").describe("Kaggle machineShape value, or 'none' for CPU-only. Call kaggle_accelerators_list for the current upstream list."),
 				dataset_sources: z.array(z.string()).optional().describe("Dataset references to attach"),
 				timeout_seconds: z.number().default(600).describe("Max wait time in seconds (default: 10 min)"),
 			},

@@ -10,6 +10,7 @@ A remote MCP server on Cloudflare Workers that proxies tool calls to the Kaggle 
 | `kaggle_kernel_status` | Check execution status (queued/running/complete/error) |
 | `kaggle_kernel_output` | Get execution output (files + log). The `log` field is only populated after the kernel reaches `complete`/`error`; while `queued`/`running` it is empty. Kaggle's public REST API does not expose live execution logs (the official `kaggle` CLI has the same limitation). Poll `kaggle_kernel_status` until completion. |
 | `kaggle_kernels_list` | Search kernels |
+| `kaggle_accelerators_list` | Fetch the current list of accelerator (`machineShape`) values Kaggle accepts, live from kaggle-cli docs |
 | `kaggle_run` | Push code, wait for completion, return output (all-in-one) |
 | `kaggle_datasets_list` | Search datasets |
 | `kaggle_dataset_create` | Create a new dataset and upload files inline (text or base64) |
@@ -40,15 +41,24 @@ larger uploads, use the official `kaggle` CLI directly.
 
 ### GPU/TPU Accelerators
 
-Specify the `accelerator` parameter when pushing kernels:
+The `accelerator` parameter on `kaggle_kernel_push` / `kaggle_run` is a
+free-form string that maps 1:1 to Kaggle's `machineShape` API field. Pass
+`"none"` for CPU-only.
 
-| Value | Hardware |
-|-------|----------|
-| `none` | CPU only |
-| `NvidiaTeslaP100` | NVIDIA Tesla P100 (16GB) |
-| `NvidiaTeslaT4` | NVIDIA Tesla T4 (16GB) |
-| `NvidiaTeslaT4x2` | NVIDIA Tesla T4 x2 |
-| `TpuV6E8` | TPU v6e-8 |
+To see what Kaggle currently accepts (the list changes over time as new GPUs
+ship), call **`kaggle_accelerators_list`** — it fetches the canonical list
+live from
+[Kaggle/kaggle-cli `docs/kernels.md`](https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels.md)
+so no proxy redeploy is required when Kaggle adds or removes a shape.
+
+Common shape names at the time of writing: `NvidiaTeslaP100`,
+`NvidiaTeslaT4`, `NvidiaTeslaT4Highmem`, `Tpu1VmV38`, `TpuV6E8`. Several
+others (A100, L4, H100, RTX Pro 6000, etc.) exist but are restricted to
+specific competitions or admins; Kaggle will reject the push if your account
+is not eligible.
+
+> **Note:** Kaggle removed `NvidiaTeslaT4x2` from the public API.
+> `NvidiaTeslaT4Highmem` is the current higher-resource T4 option.
 
 Kaggle provides **30 hours/week** of free GPU time.
 

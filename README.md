@@ -16,6 +16,8 @@ A remote MCP server on Cloudflare Workers that proxies tool calls to the Kaggle 
 | `kaggle_dataset_create` | Create a new dataset and upload files inline (text or base64) |
 | `kaggle_dataset_version` | Upload a new version of an existing dataset |
 | `kaggle_dataset_status` | Check processing status of a dataset |
+| `kaggle_dataset_files_list` | List files (name, size, columns) inside a dataset |
+| `kaggle_dataset_download_url` | Resolve a dataset (or single file) to a temporary signed GCS download URL — no bytes pass through the worker |
 | `kaggle_competitions_list` | Search competitions |
 
 ### Uploading training data

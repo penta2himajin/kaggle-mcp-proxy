@@ -428,6 +428,95 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 		);
 
 		this.server.tool(
+			"kaggle_dataset_files_list",
+			"List files inside a Kaggle dataset (name, size, type, column metadata when available). Returns metadata only — to actually fetch bytes, use kaggle_dataset_download_url.",
+			{
+				dataset: z.string().describe("Dataset reference 'owner/slug'"),
+				version: z.number().optional().describe("Dataset version number (defaults to latest)"),
+				page_size: z.number().optional().describe("Max number of files to return per page"),
+				page_token: z.string().optional().describe("Continuation token from a previous response's nextPageToken"),
+			},
+			async ({ dataset, version, page_size, page_token }) => {
+				try {
+					const parts = dataset.split("/");
+					const owner = parts.length === 2 ? parts[0] : this.env.KAGGLE_USERNAME;
+					const datasetSlug = parts.length === 2 ? parts[1] : parts[0];
+					const params = new URLSearchParams();
+					if (version !== undefined) params.set("datasetVersionNumber", String(version));
+					if (page_size !== undefined) params.set("pageSize", String(page_size));
+					if (page_token) params.set("pageToken", page_token);
+					const qs = params.toString();
+					const raw = await kaggleApi(
+						this.env,
+						`/datasets/list/${encodeURIComponent(owner)}/${encodeURIComponent(datasetSlug)}${qs ? `?${qs}` : ""}`,
+					);
+					return { content: [{ type: "text", text: JSON.stringify(trimKaggleResponse(raw), null, 2) }] };
+				} catch (e: unknown) {
+					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
+				}
+			},
+		);
+
+		this.server.tool(
+			"kaggle_dataset_download_url",
+			"Resolve a Kaggle dataset (or single file) to a temporary signed download URL. Kaggle returns a 302 to a Google Cloud Storage signed URL that is valid for several hours and does NOT require Kaggle auth — the caller can curl/wget it directly. Bytes never pass through this worker.",
+			{
+				dataset: z.string().describe("Dataset reference 'owner/slug'"),
+				file_name: z.string().optional().describe("Optional single-file name. Omit to get the whole-dataset zip URL."),
+				version: z.number().optional().describe("Dataset version number (defaults to latest)"),
+				raw: z.boolean().optional().describe("Download the raw (uncompressed) file. Only meaningful when file_name is set."),
+			},
+			async ({ dataset, file_name, version, raw }) => {
+				try {
+					const parts = dataset.split("/");
+					const owner = parts.length === 2 ? parts[0] : this.env.KAGGLE_USERNAME;
+					const datasetSlug = parts.length === 2 ? parts[1] : parts[0];
+					const segments = [
+						"datasets",
+						"download",
+						encodeURIComponent(owner),
+						encodeURIComponent(datasetSlug),
+					];
+					if (file_name) segments.push(encodeURIComponent(file_name));
+					const params = new URLSearchParams();
+					if (version !== undefined) params.set("datasetVersionNumber", String(version));
+					if (raw) params.set("raw", "true");
+					const qs = params.toString();
+					const url = `${KAGGLE_API}/${segments.join("/")}${qs ? `?${qs}` : ""}`;
+
+					const res = await fetch(url, {
+						method: "GET",
+						headers: { Authorization: kaggleAuthHeader(this.env) },
+						redirect: "manual",
+					});
+
+					if (res.status >= 300 && res.status < 400) {
+						const location = res.headers.get("Location");
+						if (!location) throw new Error(`Kaggle returned ${res.status} but no Location header`);
+						return {
+							content: [{
+								type: "text",
+								text: JSON.stringify({
+									dataset: `${owner}/${datasetSlug}`,
+									...(file_name ? { file: file_name } : { archive: "zip" }),
+									url: location,
+									note: "Signed GCS URL, valid for several hours. No auth required to download.",
+								}, null, 2),
+							}],
+						};
+					}
+					if (res.ok) {
+						throw new Error(`Expected 302 redirect but got ${res.status}. Kaggle may have returned the bytes inline — this tool does not proxy bytes; use the official kaggle CLI for that case.`);
+					}
+					const body = await res.text();
+					throw new Error(`Kaggle API ${res.status}: ${body}`);
+				} catch (e: unknown) {
+					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
+				}
+			},
+		);
+
+		this.server.tool(
 			"kaggle_datasets_list",
 			"Search and list Kaggle datasets. Defaults to your own datasets (including private). Pass user='<name>' to view another user's public datasets, or user='' to list trending/public datasets across all users.",
 			{

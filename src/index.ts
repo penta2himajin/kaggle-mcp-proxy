@@ -3,6 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import { GitHubHandler } from "./github-handler";
+import { fetchKaggleAccelerators } from "./accelerators";
+import { DEFAULT_MAX_BYTES, fetchKernelLogs } from "./kernel-logs";
 
 type Props = {
 	login: string;
@@ -111,51 +113,6 @@ async function uploadDatasetFile(
 	return start.token;
 }
 
-// Fetch Kaggle's canonical accelerator list from the kaggle-cli docs. The
-// shape names map 1:1 to the `machineShape` field of `/kernels/push`, so we
-// avoid baking a stale enum into the worker and let upstream be the source
-// of truth.
-const KAGGLE_KERNELS_DOC = "https://raw.githubusercontent.com/Kaggle/kaggle-cli/main/docs/kernels.md";
-
-async function fetchKaggleAccelerators(): Promise<{
-	asOf: string;
-	source: string;
-	accelerators: string[];
-	notes: string[];
-}> {
-	const res = await fetch(KAGGLE_KERNELS_DOC);
-	if (!res.ok) throw new Error(`Failed to fetch kernels.md: ${res.status}`);
-	const md = await res.text();
-	const heading = md.match(/Accelerators available as of ([^:\n]+):\s*\n/);
-	if (!heading) {
-		throw new Error("Could not locate 'Accelerators available as of …' heading in kernels.md; upstream doc format may have changed.");
-	}
-	const tail = md.slice(md.indexOf(heading[0]) + heading[0].length);
-	const accelerators: string[] = [];
-	const notes: string[] = [];
-	let listEnded = false;
-	for (const line of tail.split("\n")) {
-		const bullet = line.match(/^\*\s+(\S+)\s*$/);
-		if (!listEnded && bullet) {
-			accelerators.push(bullet[1]);
-			continue;
-		}
-		if (!accelerators.length) continue;
-		if (!line.trim()) {
-			listEnded = true;
-			continue;
-		}
-		if (line.startsWith("#")) break;
-		notes.push(line.trim());
-	}
-	return {
-		asOf: heading[1].trim(),
-		source: "https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels.md",
-		accelerators,
-		notes,
-	};
-}
-
 // ── MCP Server ──────────────────────────────────────────────────────
 
 export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
@@ -180,7 +137,7 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 				code: z.string().describe("Python code to execute"),
 				language: z.enum(["python", "r"]).default("python").describe("Programming language"),
 				kernel_type: z.enum(["notebook", "script"]).default("script").describe("Kernel type"),
-				accelerator: z.string().default("none").describe("Kaggle machineShape value, or 'none' for CPU-only. Examples: NvidiaTeslaT4, NvidiaTeslaT4Highmem, NvidiaTeslaP100, TpuV6E8. Call kaggle_accelerators_list to fetch the current upstream list."),
+				accelerator: z.string().default("none").describe("Kaggle machineShape value, or 'none' for CPU-only. Examples: NvidiaTeslaT4, TpuV6E8. Call kaggle_accelerators_list to fetch the current upstream list."),
 				enable_internet: z.boolean().default(true).describe("Enable internet access"),
 				dataset_sources: z.array(z.string()).optional().describe("Dataset references to attach (e.g., 'username/dataset-name')"),
 			},
@@ -208,7 +165,7 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 							text: JSON.stringify({
 								status: "submitted",
 								ref: `${this.env.KAGGLE_USERNAME}/${slug}`,
-								message: "Kernel pushed. Use kaggle_kernel_status to check execution progress.",
+								message: "Kernel pushed. Use kaggle_kernel_status or kaggle_kernel_logs for execution progress.",
 								result,
 							}, null, 2),
 						}],
@@ -221,7 +178,7 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 
 		this.server.tool(
 			"kaggle_kernel_status",
-			"Check the execution status of a Kaggle kernel. Returns status (queued/running/complete/error).",
+			"Check the execution status of a Kaggle kernel. Returns status (queued/running/complete/error). While running, use kaggle_kernel_logs for live stdout/stderr.",
 			{
 				kernel: z.string().describe("Kernel reference (e.g., 'username/kernel-name')"),
 			},
@@ -237,8 +194,44 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 		);
 
 		this.server.tool(
+			"kaggle_kernel_logs",
+			"Read a Kaggle kernel's execution log while it runs (SSE) or after completion (stored JSON). Supports cursor-based incremental reads, tail, stream filter (stdout/stderr), and short long-poll via wait_seconds. Reconnect always replays from the start — use next_cursor to skip already-seen events.",
+			{
+				kernel: z.string().describe("Kernel reference owner/slug"),
+				version: z.string().optional().describe("Kernel version label (query param versionLabel; do not put version in the path)"),
+				cursor: z.string().optional().describe("Opaque cursor from a prior next_cursor; return only newer events"),
+				tail: z.number().optional().describe("Return only the last N log lines after other filters"),
+				stream: z.enum(["stdout", "stderr", "all"]).default("all").describe("Which stream to include"),
+				wait_seconds: z.number().min(0).max(25).default(0).describe("After catching up on replay, wait up to this many seconds for new log lines"),
+				max_bytes: z.number().default(DEFAULT_MAX_BYTES).describe("Max bytes of formatted log text (keeps newest when truncating)"),
+			},
+			async ({ kernel, version, cursor, tail, stream, wait_seconds, max_bytes }) => {
+				try {
+					const [owner, slug] = kernel.split("/");
+					if (!owner || !slug) {
+						throw new Error("kernel must be owner/slug");
+					}
+					const result = await fetchKernelLogs({
+						authHeader: kaggleAuthHeader(this.env),
+						owner,
+						slug,
+						version,
+						cursor,
+						tail,
+						stream,
+						waitSeconds: wait_seconds,
+						maxBytes: max_bytes,
+					});
+					return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+				} catch (e: unknown) {
+					return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }] };
+				}
+			},
+		);
+
+		this.server.tool(
 			"kaggle_kernel_output",
-			"Get the output (files + log) of a Kaggle kernel. NOTE: the `log` field is only populated AFTER the kernel reaches `complete` or `error`. While the kernel is in `queued`/`running`, `log` will be an empty string — Kaggle's public REST API does not expose live execution logs (the official `kaggle` CLI has the same limitation). Poll `kaggle_kernel_status` until completion before expecting log content.",
+			"Get the output (files + log) of a Kaggle kernel. The `log` field in this response is only populated after `complete`/`error`; for live or incremental logs while queued/running, use kaggle_kernel_logs instead.",
 			{
 				kernel: z.string().describe("Kernel reference (e.g., 'username/kernel-name')"),
 			},
@@ -632,8 +625,8 @@ export class KaggleMCP extends McpAgent<Env, Record<string, never>, Props> {
 								status,
 								ref,
 								message: status === "error"
-									? "Execution failed. Use kaggle_kernel_output for details."
-									: `Timed out after ${timeout_seconds}s. Use kaggle_kernel_status to check.`,
+									? "Execution failed. Use kaggle_kernel_output or kaggle_kernel_logs for details."
+									: `Timed out after ${timeout_seconds}s. Use kaggle_kernel_status or kaggle_kernel_logs to check progress.`,
 							}, null, 2),
 						}],
 					};

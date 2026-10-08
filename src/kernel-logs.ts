@@ -128,9 +128,17 @@ function streamMatches(streamName: string, filter: KernelLogStreamFilter): boole
 	return n.includes("stdout") || n === "output" || (!n.includes("stderr") && !n.includes("error"));
 }
 
+/** Format kernel log timestamps to millisecond precision (token-friendly). */
+export function formatLogTime(seconds: number): string {
+	const rounded = Math.round(seconds * 1000) / 1000;
+	let s = rounded.toFixed(3);
+	s = s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+	return `${s}s`;
+}
+
 export function formatLogLine(ev: KernelLogEvent): string {
 	const stream = ev.stream_name.toLowerCase().includes("stderr") ? "stderr" : "stdout";
-	const t = `${ev.time}s`;
+	const t = formatLogTime(ev.time);
 	const text = ev.data.replace(/\r/g, "").replace(/\n$/, "");
 	return `[${stream}] ${t} ${text}`;
 }

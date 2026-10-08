@@ -67,7 +67,7 @@ Per the current [kaggle-cli `docs/kernels.md`](https://github.com/Kaggle/kaggle-
   "next_cursor": "42",
   "truncated": false,
   "total_events": 42,
-  "log": "[stdout] 12.3s Training epoch 1/10\n[stderr] 12.4s /tmp/warning\n"
+  "log": "[stdout] 12.3s Training epoch 1/10\n[stderr] 52.766s /tmp/warning\n"
 }
 ```
 

@@ -5,6 +5,8 @@ import {
 	parseCompletedLogBody,
 	assembleKernelLogs,
 	collapseCarriageReturnsInEvents,
+	formatLogLine,
+	formatLogTime,
 	fetchKernelLogs,
 	LOG_END_SENTINEL,
 } from "./kernel-logs";
@@ -41,6 +43,25 @@ describe("parseCompletedLogBody", () => {
 		const events = parseCompletedLogBody(body);
 		expect(events).toHaveLength(2);
 		expect(events[0].data).toBe("hello\n");
+	});
+});
+
+describe("formatLogTime", () => {
+	it("rounds to millisecond precision", () => {
+		expect(formatLogTime(52.766068352)).toBe("52.766s");
+		expect(formatLogTime(3)).toBe("3s");
+		expect(formatLogTime(12.4)).toBe("12.4s");
+	});
+});
+
+describe("formatLogLine", () => {
+	it("uses millisecond timestamps in output", () => {
+		const line = formatLogLine({
+			stream_name: "stderr",
+			time: 52.766068352,
+			data: "warn\n",
+		});
+		expect(line).toBe("[stderr] 52.766s warn");
 	});
 });
 
